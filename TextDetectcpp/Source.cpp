@@ -3,6 +3,9 @@
 #include <opencv\cv.h>
 #include <opencv\highgui.h>
 #include <opencv\cxcore.h>
+#include <boost\graph\connected_components.hpp>
+#include <boost\graph\adjacency_list.hpp>
+#include <boost\graph\floyd_warshall_shortest.hpp>
 
 using namespace std;
 
@@ -20,7 +23,13 @@ struct Ray {
 	std::vector<Point2d> points;
 };
 
+void LOG(string message)
+{
+	std::cout << message << endl;
+}
+
 void StrokeWidthMedianFilter(IplImage* SWTImage, std::vector<Ray>& rays);
+std::vector<std::vector<Point2d>> findConnectedComponents(IplImage* SWTImage);
 
 void StrokeWidthTransform(IplImage* edgeImage,
 	                      IplImage* gradientX,
@@ -95,7 +104,7 @@ void StrokeWidthTransform(IplImage* edgeImage,
 							if (acos(G_X * -G_Xq + G_Y *-G_Yq) < PI / 2.0)
 							{
 								//Create the SWT Element
-								float length = ((float)r.q.x - (float)r.p.x) * ((float)r.q.x - (float)r.p.x) +
+								float length = sqrt((float)r.q.x - (float)r.p.x) * ((float)r.q.x - (float)r.p.x) +
 									           ((float)r.q.y - (float)r.p.y) * ((float)r.q.y - (float)r.p.y);
 
 								for (std::vector<Point2d>::iterator pointIterator = points.begin();
@@ -170,6 +179,7 @@ void TextDetection(IplImage* inputImage)
 	// Second Pass
 	StrokeWidthMedianFilter(SWTImage, rays);
 
+	findConnectedComponents(SWTImage);
 	IplImage* tempImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
 	cvConvertScale(SWTImage, tempImage, 255);
 	cvSaveImage("SWT.png", tempImage);
@@ -200,6 +210,104 @@ void StrokeWidthMedianFilter(IplImage* SWTImage, std::vector<Ray>& rays)
 		{
 			CV_IMAGE_ELEM(SWTImage, float, point->y, point->x) = std::min(medianSWTValue, point->SWT);
 		}
+	}
+}
+
+std::vector<std::vector<Point2d>> findConnectedComponents(IplImage* SWTImage)
+{
+	std::map<int, int> imageMap;
+	std::map<int, Point2d> reverseImageMap;
+	//First Step: No. the vertices in the image to form a graph
+	for (int row = 0; row < SWTImage->height; row++)
+	{
+		float* pixelPtr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
+		int counter = 0;
+		for (int col = 0; col < SWTImage->width; col++)
+		{
+			if (*pixelPtr > 0)
+			{
+				imageMap[row * SWTImage->width + col] = counter;
+				Point2d p;
+				p.x = col;
+				p.y = row;
+				reverseImageMap[counter] = p;
+				counter++;
+			}
+			pixelPtr++;
+		}
+
+		boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> graph(counter);
+
+		for (int row = 0; row < SWTImage->height; row++)
+		{
+			float* pixelPtr = (float*)(SWTImage->imageData + row * SWTImage->width);
+			for (int col = 0; col < SWTImage->width; col++)
+			{
+				float lastSW = 0;
+				if (*pixelPtr > 0)
+				{
+					int currentPixel = imageMap[row * SWTImage->width + col];
+					if (col + 1 < SWTImage->width)
+					{
+						float currentValue = CV_IMAGE_ELEM(SWTImage, float, col + 1, row);
+						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
+						{
+							boost::add_edge(currentPixel, imageMap[row * SWTImage->width + col + 1], graph);
+						}
+					}
+
+					if (col + 1 < SWTImage->width && row + 1 < SWTImage->height)
+					{
+						float currentValue = CV_IMAGE_ELEM(SWTImage, float, col + 1, row + 1);
+						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
+						{
+							boost::add_edge(currentPixel, imageMap[(row + 1) * SWTImage->width + col + 1], graph);
+						}
+					}
+
+					if (row + 1 < SWTImage->height)
+					{
+						float currentValue = CV_IMAGE_ELEM(SWTImage, float, col, row + 1);
+						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
+						{
+							boost::add_edge(currentPixel, imageMap[(row + 1) * SWTImage->width + col], graph);
+						}
+					}
+
+					if (col - 1 > 0 && row + 1 < SWTImage->height)
+					{
+						float currentValue = CV_IMAGE_ELEM(SWTImage, float, col - 1, row + 1);
+						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
+						{
+							boost::add_edge(currentPixel, imageMap[(row + 1) * SWTImage->width + col - 1], graph);
+						}
+					}
+				}
+				pixelPtr++;
+			}
+
+			std::vector<int> c(counter);
+			int componentCount = boost::connected_components(graph, &c[0]);
+			std::vector<std::vector<Point2d>> connectedComponents(componentCount);
+			LOG("before filtering: " + to_string(componentCount) + " components and " + to_string(counter) + " vertices");
+
+			for (int i = 0; i < componentCount; i++)
+			{
+				std::vector<Point2d> temp;
+				connectedComponents.push_back(temp);
+			}
+
+			for (int i = 0; i < counter; i++)
+			{
+				std::vector<Point2d> currentComponent = connectedComponents[c[i]];
+				Point2d currentPoint = reverseImageMap[i];
+				currentComponent.push_back(currentPoint);
+			}
+
+			return connectedComponents;
+
+		}
+
 	}
 }
 
