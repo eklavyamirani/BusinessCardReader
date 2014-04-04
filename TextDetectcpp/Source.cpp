@@ -39,11 +39,18 @@ void LOG(string message)
 	std::cout << message << endl;
 }
 
-void LOG(IplImage* inputImage)
+void LOG(IplImage* inputImage, bool SWT=true)
 {
-	IplImage* tempImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-	cvConvertScale(inputImage, tempImage, 255);
-	cvSaveImage("SWT.png", tempImage);
+	IplImage* tempImage;
+	if (SWT) {
+		tempImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
+		cvConvertScale(inputImage, tempImage, 255);
+		cvSaveImage("SWT.png", tempImage);
+	}
+	else
+	{
+		tempImage = inputImage;
+	}
 	cvNamedWindow("Window", CV_WINDOW_AUTOSIZE);
 	cvShowImage("Window", tempImage);
 	cvWaitKey(0);
@@ -55,6 +62,7 @@ void StrokeWidthMedianFilter(IplImage* SWTImage, std::vector<Ray>& rays);
 std::vector<ConnectedComponent> findConnectedComponents(IplImage* SWTImage);
 std::vector<ConnectedComponent> FilterComponents(IplImage* SWTImage, std::vector<ConnectedComponent> &unfilteredComponents);
 void FindComponentStats(IplImage* SWTImage, std::vector<ConnectedComponent> &components);
+void DrawBoundingBox(IplImage* inputImage, const std::vector<ConnectedComponent> components);
 
 //void NormalizeImage(const IplImage* inputImage, IplImage* outputImage)
 //{
@@ -203,12 +211,14 @@ void TextDetection(IplImage* inputImage)
 	IplImage* edgeImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_8U, 1);
 	double threshold_low = 175;
 	double threshold_high = 320;
+	cvSmooth(grayScaleImage, grayScaleImage, CV_GAUSSIAN, 3, 1);
 	cvCanny(grayScaleImage, edgeImage, threshold_low, threshold_high);
 
 	//Find Gradient
 	IplImage* gradientImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-	cvConvertScale(edgeImage, gradientImage, 1./255.);
-	cvSmooth(gradientImage, gradientImage, CV_GAUSSIAN, 5, 5);
+	cvConvertScale(edgeImage, gradientImage, 1.);
+	LOG(gradientImage, false);
+	//cvSmooth(gradientImage, gradientImage, CV_GAUSSIAN, 5, 5);
 
 	IplImage* gradientX = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
 	IplImage* gradientY = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
@@ -243,12 +253,12 @@ void TextDetection(IplImage* inputImage)
 
 	// Second Pass
 	StrokeWidthMedianFilter(SWTImage, rays);
-
+	LOG(SWTImage);
 	std::vector<ConnectedComponent> components = findConnectedComponents(SWTImage);
 	FindComponentStats(SWTImage, components);
-	FilterComponents(SWTImage, components);
-	
-	
+	//DrawBoundingBox(inputImage, components);
+	std::vector<ConnectedComponent> filteredComponents = FilterComponents(SWTImage, components);
+	DrawBoundingBox(inputImage, filteredComponents);
 }
 
 void StrokeWidthMedianFilter(IplImage* SWTImage, std::vector<Ray>& rays)
@@ -371,7 +381,7 @@ std::vector<ConnectedComponent> findConnectedComponents(IplImage* SWTImage)
 
 void FindComponentStats(IplImage* SWTImage, std::vector<ConnectedComponent> &components)
 {
-	for (std::vector<ConnectedComponent>::iterator component = components.begin(); component < components.end(); component++)
+	for (std::vector<ConnectedComponent>::iterator component = components.begin(); component != components.end(); component++)
 	{
 		float mean = 0;
 		int minX = INT_MAX;
@@ -440,10 +450,32 @@ std::vector<ConnectedComponent> FilterComponents(IplImage* SWTImage, std::vector
 	return filteredComponents;
 }
 
+void DrawBoundingBox(IplImage* inputImage, const std::vector<ConnectedComponent> components)
+{
+	for (std::vector<ConnectedComponent>::const_iterator component = components.begin(); component != components.end() ; component++)
+	{
+		Point2d min = { INT_MAX, INT_MAX, 0 };
+		Point2d max = {0, 0, 0};
+		for each (Point2d point in component->points)
+		{
+			min.x = std::min(min.x, point.x);
+			min.y = std::min(min.y, point.y);
+			max.x = std::max(max.x, point.x);
+			max.y = std::max(max.y, point.y);
+		}
+		cvDrawRect(inputImage,
+			cvPoint(min.x, min.y),
+			cvPoint(max.x, max.y),
+			CV_RGB(255, 0, 0),
+			2);
+	}
+	LOG(inputImage, false);
+}
+
 int main()
 {
 	IplImage* inputImage = cvLoadImage(
-		"C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.png");
+		"C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.jpg");
 	if (!inputImage)
 	{
 		throw new exception("File not found");
