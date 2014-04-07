@@ -42,7 +42,7 @@ namespace BusinessCardReader
 
 	struct ConnectedComponent
 	{
-		std::vector<Point> points;
+		std::vector<SWTPoint> points;
 		float variance;
 		float mean;
 		float height;
@@ -196,15 +196,16 @@ namespace BusinessCardReader
 	std::vector<ConnectedComponent> FindConnectedComponents(Mat SWTImage)
 	{
 		std::map<int, int> imageMap;
-		std::map<int, Point> reverseImageMap;
+		std::map<int, SWTPoint> reverseImageMap;
 		int vertexCount = 0;
 		for (int row = 0; row < SWTImage.rows; row++)
 		{
 			for (int col = 0; col < SWTImage.cols; col++)
 			{
-				if (SWTImage.at<float>(row, col) > 0)
+				float SWTValue = SWTImage.at<float>(row, col);
+				if (SWTValue > 0)
 				{
-					Point vertex = { col, row };
+					SWTPoint vertex = { col, row, SWTValue };
 					reverseImageMap[vertexCount] = vertex;
 					imageMap[row * SWTImage.cols + col] = vertexCount;
 					vertexCount++;
@@ -217,7 +218,7 @@ namespace BusinessCardReader
 
 		for (int n = 0; n < vertexCount; n++)
 		{
-			Point vertex = reverseImageMap[n];
+			SWTPoint vertex = reverseImageMap[n];
 			int NextPixelX[] = { 1, 1, 0, -1 };
 			int NextPixelY[] = { 0, 1, 1, 1 };
 			float currentSWTValue = SWTImage.at<float>(vertex.y, vertex.x);
@@ -260,7 +261,7 @@ namespace BusinessCardReader
 
 		for (int i = 0; i < vertexCount; i++)
 		{
-			Point vertex = reverseImageMap[i];
+			SWTPoint vertex = reverseImageMap[i];
 			connectedComponents[componentMap[i]].points.push_back(vertex);
 		}
 
@@ -273,7 +274,7 @@ namespace BusinessCardReader
 		{
 			SWTPoint min = { INT_MAX, INT_MAX, 0 };
 			SWTPoint max = { 0, 0, 0 };
-			for each (Point point in component->points)
+			for each (SWTPoint point in component->points)
 			{
 				min.x = std::min(min.x, point.x);
 				min.y = std::min(min.y, point.y);
@@ -289,6 +290,58 @@ namespace BusinessCardReader
 		LOG(inputImage);
 	}
 
+	void FindComponentStats(std::vector<ConnectedComponent>& components)
+	{
+		for (std::vector<ConnectedComponent>::iterator component = components.begin(); component != components.end(); component++)
+		{
+			float mean = 0;
+			float variance = 0;
+			int minX = INT_MAX;
+			int minY = INT_MAX;
+			int maxX = 0;
+			int maxY = 0;
+			for (std::vector<SWTPoint>::iterator point = component->points.begin(); point != component->points.end(); point++)
+			{
+				minX = std::min(minX, point->x);
+				minY = std::min(minY, point->y);
+				maxX = std::max(maxX, point->x);
+				maxY = std::max(maxY, point->y);
+				mean += point->SWT;
+			}
+
+			mean /= component->points.size();
+
+			for (std::vector<SWTPoint>::iterator point = component->points.begin(); point != component->points.end(); point++)
+			{
+				variance += (point->SWT - mean) * (point->SWT - mean);
+			}
+			variance /= component->points.size();
+			component->mean = mean;
+			component->variance = variance;
+			component->height = maxY - minY;
+			component->width = maxX - minX;
+		}
+	}
+
+	std::vector<ConnectedComponent> FilterComponents(std::vector<ConnectedComponent> &unfilteredComponents)
+	{
+		std::vector<ConnectedComponent> filteredComponents;
+		FindComponentStats(unfilteredComponents);
+		for (std::vector<ConnectedComponent>::iterator component = unfilteredComponents.begin(); component != unfilteredComponents.end(); component++)
+		{
+			if (component->variance > 0.5 * component->mean)
+			{
+				continue;
+			}
+			float aspectRatio = component->width / component->height;
+			if (aspectRatio < 0.1 || aspectRatio > 10)
+			{
+				continue;
+			}
+			filteredComponents.push_back(*component);
+		}
+		return filteredComponents;
+	}
 
 	void TextDetection(Mat inputImage)
 	{
@@ -325,18 +378,19 @@ namespace BusinessCardReader
 		FindSWTMedians(ray);
 
 		//Find Connected Components
-	std:vector<ConnectedComponent> components = FindConnectedComponents(SWT);
-		DrawBoundingBox(inputImage, components);
+		std::vector<ConnectedComponent> components = FindConnectedComponents(SWT);
+		std::vector<ConnectedComponent> filteredComponents = FilterComponents(components);
+		DrawBoundingBox(inputImage, filteredComponents);
 	}
 
 };
 
 int main()
 {
-	cv::Mat inputImage = cv::imread("C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.jpg");
+	cv::Mat inputImage = cv::imread("C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.png");
 	//assert(inputImage.data);
 	//BusinessCardReader::LOG(inputImage);
-	cv::resize(inputImage, inputImage, cv::Size(inputImage.cols / 2, inputImage.rows / 2));
+	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
 	BusinessCardReader::TextDetection(inputImage);
 	return 0;
 }
