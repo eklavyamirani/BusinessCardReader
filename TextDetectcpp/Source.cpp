@@ -1,486 +1,342 @@
 #define _CRT_SECURE_NO_DEPRECATE
 #include <iostream>
-#include <queue>
-#include <opencv\cv.h>
-#include <opencv\highgui.h>
-#include <opencv\cxcore.h>
-#include <boost\graph\connected_components.hpp>
+#include <string>
+#include <opencv2\highgui\highgui.hpp>
+#include <opencv2\core\core.hpp>
+#include <opencv2\opencv.hpp>
 #include <boost\graph\adjacency_list.hpp>
-#include <boost\graph\floyd_warshall_shortest.hpp>
+#include <boost\graph\connected_components.hpp>
 
-using namespace std;
-
-const float PI = 3.14159f;
-
-struct Point2d {
-	int x;
-	int y;
-	float SWT;
-};
-
-struct Ray {
-	Point2d p;
-	Point2d q;
-	std::vector<Point2d> points;
-};
-
-struct ConnectedComponent
+namespace BusinessCardReader
 {
-public:
-	float variance = -999;
-	std::vector<Point2d> points;
-	float aspectRatio;
-	int mean;
-	int height;
-};
+	using namespace std;
+	using namespace cv;
 
-void LOG(string message)
-{
-	std::cout << message << endl;
-}
-
-void LOG(IplImage* inputImage, bool SWT=true)
-{
-	IplImage* tempImage;
-	if (SWT) {
-		tempImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-		cvConvertScale(inputImage, tempImage, 255);
-		cvSaveImage("SWT.png", tempImage);
-	}
-	else
+	struct SWTPoint
 	{
-		tempImage = inputImage;
-	}
-	cvNamedWindow("Window", CV_WINDOW_AUTOSIZE);
-	cvShowImage("Window", tempImage);
-	cvWaitKey(0);
-	cvReleaseImage(&tempImage);
-	cvDestroyWindow("Window");
-}
+		int x;
+		int y;
+		float SWT;
+	};
 
-void StrokeWidthMedianFilter(IplImage* SWTImage, std::vector<Ray>& rays);
-std::vector<ConnectedComponent> findConnectedComponents(IplImage* SWTImage);
-std::vector<ConnectedComponent> FilterComponents(IplImage* SWTImage, std::vector<ConnectedComponent> &unfilteredComponents);
-void FindComponentStats(IplImage* SWTImage, std::vector<ConnectedComponent> &components);
-void DrawBoundingBox(IplImage* inputImage, const std::vector<ConnectedComponent> components);
-
-//void NormalizeImage(const IplImage* inputImage, IplImage* outputImage)
-//{
-//	assert(inputImage->depth == outputImage->depth);
-//	assert(inputImage->nChannels == outputImage->nChannels);
-//	float minVal = INT_MAX;
-//	float maxVal = 0;
-//
-//	for (int row = 0; row < inputImage->height; row++)
-//	{
-//		float* ptr = (float*)(inputImage->imageData + row * inputImage->widthStep);
-//		for (int col = 0; col < inputImage->width; col++)
-//		{
-//			if (*ptr >= 0)
-//			{
-//				minVal = std::min(minVal, *ptr);
-//				maxVal = std::max(maxVal, *ptr);
-//			}
-//		}
-//
-//		//Normalization = (currVal - min)/max - min
-//
-//		for (int row = 0; row < inputImage->height; row++)
-//		{
-//			float* inputPtr = (float*)(inputImage->imageData + row * inputImage->widthStep);
-//			float* outputPtr = (float*)(outputImage->imageData + row * outputImage->widthStep);
-//			for (int col = 0; col < inputImage->width; col++)
-//			{
-//				if (*inputPtr < 0)
-//				{
-//					*outputPtr = 0;
-//				}
-//				else
-//				{
-//					*outputPtr = (*inputPtr - minVal) / (maxVal - minVal);
-//				}
-//			}
-//		}
-//	}
-//}
-
-void StrokeWidthTransform(IplImage* edgeImage,
-	                      IplImage* gradientX,
-						  IplImage* gradientY,
-						  IplImage* SWTImage,
-						  std::vector<Ray>& rays)
-{
-	const float step = 0.05f;
-	for (int row = 0; row < edgeImage->height; row++)
+	void LOG(std::string message)
 	{
-		const uchar* rowPtr = (const uchar*)(edgeImage->imageData + row * edgeImage->widthStep);
-		for (int column = 0; column < edgeImage->width; column++)
+		std::cout << message << std::endl;
+	}
+
+	void LOG(cv::Mat inputImage)
+	{
+		const std::string WINDOW_NAME = "Input Image";
+		cv::namedWindow(WINDOW_NAME);
+		cv::imshow(WINDOW_NAME, inputImage);
+		cv::waitKey(0);
+		cv::destroyWindow(WINDOW_NAME);
+	}
+
+	struct Ray
+	{
+		vector<SWTPoint> points;
+		Point p;
+		Point q;
+	};
+
+	struct ConnectedComponent
+	{
+		std::vector<Point> points;
+		float variance;
+		float mean;
+		float height;
+		float width;
+	};
+
+	typedef std::vector<Ray> Rays;
+
+	void StrokeWidthTransform(Mat edgeImage, Mat gradientX, Mat gradientY, Mat &SWT, Rays &rays)
+	{
+		for (int i = 0; i < edgeImage.rows; i++)
 		{
-			if (*rowPtr > 0)
+			//uchar* rowPtr = edgeImage.ptr(i);
+			for (int j = 0; j < edgeImage.cols; j++)
 			{
-				Ray r;
-				Point2d currentPoint;
-				currentPoint.x = column;
-				currentPoint.y = row;
-				r.p = currentPoint;
-				std::vector<Point2d> points;
-				points.push_back(currentPoint);
-
-				float G_X = CV_IMAGE_ELEM(gradientX, float, row, column);
-				float G_Y = CV_IMAGE_ELEM(gradientY, float, row, column);
-				int currXPix = column;
-				int currYPix = row;
-
-				float nextXPix = (float)column + 0.5f;
-				float nextYPix = (float)row + 0.5f;
-
-				float gradientMagnitude = sqrt((G_X * G_X + G_Y * G_Y));
-
-				// For a light background with dark text, 
-				// normalise Gradients as negative vectors. (Opposite Direction)
-				G_X = - G_X / gradientMagnitude;
-				G_Y = - G_Y / gradientMagnitude;
-
-				// Now we trace the ray to the next edge point
-				while (true)
+				float prec = 0.05f;
+				float step = 0.5f;
+				uchar tempVal = edgeImage.at<uchar>(i, j);
+				if (tempVal > 0)
 				{
-					nextXPix += G_X * step;
-					nextYPix += G_Y * step;
-					if (floor(nextXPix) != currXPix || floor(nextYPix) != currYPix)
+					float currentX = j;
+					float currentY = i;
+					Ray ray;
+					ray.p = Point(currentX, currentY);
+					SWTPoint startingPoint = { currentX, currentY, -1 };
+					std::vector<SWTPoint> points;
+					points.push_back(startingPoint);
+
+					currentX += step;
+					currentY += step;
+
+					int currentPixelX = j;
+					int currentPixelY = i;
+
+					float Gx = gradientX.at<float>(i, j);
+					float Gy = gradientY.at<float>(i, j);
+
+					float gradientMagnitude = sqrt((Gx * Gx) + (Gy * Gy));
+					Gx = -Gx / gradientMagnitude;
+					Gy = -Gy / gradientMagnitude;
+					//LOG("i,j = " + to_string(i) + to_string(j));
+					while (true)
 					{
-						currXPix = floor(nextXPix);
-						currYPix = floor(nextYPix);
-
-						if (currXPix < 0 || currXPix >= edgeImage->width ||
-							currYPix < 0 || currYPix >= edgeImage->height)
+						currentX += Gx * prec;
+						currentY += Gy * prec;
+						if (floor(currentX) != currentPixelX || floor(currentY) != currentPixelY)
 						{
-							// out of bounds
-							break;
-						}
-
-						Point2d nextPoint;
-						nextPoint.x = currXPix;
-						nextPoint.y = currYPix;
-						points.push_back(nextPoint);
-
-						float G_Xq = CV_IMAGE_ELEM(gradientX, float, currYPix, currXPix);
-						float G_Yq = CV_IMAGE_ELEM(gradientY, float, currYPix, currXPix);
-
-						//End point of ray if the next pixel is an edgepoint on the edge image
-						if (CV_IMAGE_ELEM(edgeImage, uchar, currYPix, currXPix) > 0)
-						{
-							r.q = nextPoint;
-
-							// Reverse check
-							// If the direction vectors are facing each other
-							// then it is a stroke
-							if (acos(G_X * -G_Xq + G_Y *-G_Yq) < PI / 2.0)
+							if (floor(currentX) >= SWT.cols || floor(currentX) < 0 ||
+								floor(currentY) >= SWT.rows || floor(currentY) < 0)
 							{
-								//Create the SWT Element
-								float length = sqrt(((float)r.q.x - (float)r.p.x) * ((float)r.q.x - (float)r.p.x) +
-									           ((float)r.q.y - (float)r.p.y) * ((float)r.q.y - (float)r.p.y));
+								break;
+							}
 
-								for (std::vector<Point2d>::iterator pointIterator = points.begin();
-									pointIterator != points.end();
-									pointIterator++)
+							currentPixelX = floor(currentX);
+							currentPixelY = floor(currentY);
+							SWTPoint SWTCurrentPoint = { currentX, currentY, -1 };
+							points.push_back(SWTCurrentPoint);
+							//LOG(to_string(edgeImage.at<uchar>(currentPixelY, currentPixelX)));
+							if (edgeImage.at<uchar>(currentPixelY, currentPixelX) > 0)
+							{
+								ray.q = Point(currentPixelX, currentPixelY);
+								float Gxi = gradientX.at<float>(currentPixelY, currentPixelX);
+								float Gyi = gradientY.at<float>(currentPixelY, currentPixelX);
+								gradientMagnitude = sqrt(Gxi * Gxi + Gyi * Gyi);
+								Gxi = -Gxi / gradientMagnitude;
+								Gyi = -Gyi / gradientMagnitude;
+								float temp = acos(Gx * -Gxi + Gy * -Gyi);
+								if (acos(Gx * -Gxi + Gy * -Gyi) < 3.14 / 2.)
 								{
-									if (CV_IMAGE_ELEM(SWTImage, float, pointIterator->y, pointIterator->x) < 0)
-										CV_IMAGE_ELEM(SWTImage, float, pointIterator->y, pointIterator->x) = length;
-									else
-										CV_IMAGE_ELEM(SWTImage, float, pointIterator->y, pointIterator->x) = std::min(length, CV_IMAGE_ELEM(SWTImage, float, pointIterator->y, pointIterator->x));
+									float length = sqrt((ray.q.x - ray.p.x)* (ray.q.x - ray.p.x) +
+										(ray.q.y - ray.p.y)* (ray.q.y - ray.p.y));
+									for (std::vector<SWTPoint>::iterator point = points.begin(); point != points.end(); point++)
+									{
+										float SWTValue = SWT.at<float>(point->y, point->x);
+										if (SWTValue < 0)
+										{
+											SWTValue = length;
+										}
+										else
+										{
+											SWTValue = std::min(SWTValue, length);
+										}
+										point->SWT = SWTValue;
+										SWT.at<float>(point->y, point->x) = SWTValue;
+									}
+									ray.points = points;
+									rays.push_back(ray);
 								}
-								r.points = points;
-								rays.push_back(r);
 								break;
 							}
 						}
+
 					}
 				}
 			}
-			*rowPtr++;
+
 		}
 	}
-}
 
-void TextDetection(IplImage* inputImage)
-{
-	IplImage* grayScaleImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_8U, 1);
-	cvCvtColor(inputImage, grayScaleImage, CV_RGB2GRAY);
+	void normalizeImage(Mat input, Mat &output) {
+		float maxVal = 0;
+		float minVal = 1e100;
+		for (int row = 0; row < input.rows; row++){
+			const float* ptr = (const float*)(input.ptr(row));
+			for (int col = 0; col < input.cols; col++){
+				if (*ptr < 0) {}
+				else {
+					maxVal = std::max(*ptr, maxVal);
+					minVal = std::min(*ptr, minVal);
+				}
+				ptr++;
+			}
+		}
 
-	//Edge detection
-	IplImage* edgeImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_8U, 1);
-	double threshold_low = 175;
-	double threshold_high = 320;
-	cvSmooth(grayScaleImage, grayScaleImage, CV_GAUSSIAN, 3, 1);
-	cvCanny(grayScaleImage, edgeImage, threshold_low, threshold_high);
-
-	//Find Gradient
-	IplImage* gradientImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-	cvConvertScale(edgeImage, gradientImage, 1.);
-	LOG(gradientImage, false);
-	//cvSmooth(gradientImage, gradientImage, CV_GAUSSIAN, 5, 5);
-
-	IplImage* gradientX = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-	IplImage* gradientY = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-
-	cvSobel(gradientImage, gradientX, 1, 0, CV_SCHARR);
-	cvSobel(gradientImage, gradientY, 0, 1, CV_SCHARR);
-
-	cvSmooth(gradientX, gradientX, CV_MEDIAN);
-	cvSmooth(gradientY, gradientY, CV_MEDIAN);
-
-	//cvReleaseImage(&grayScaleImage);
-	cvReleaseImage(&gradientImage);
-
-	//Create SWT Element
-	IplImage* SWTImage = cvCreateImage(cvGetSize(inputImage), IPL_DEPTH_32F, 1);
-	
-	for (int row = 0; row < SWTImage->height; row++)
-	{
-		float* ptr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
-		for (int column = 0; column < SWTImage->width; column++)
-		{
-			*ptr = -1;
-			ptr++;
+		float difference = maxVal - minVal;
+		for (int row = 0; row < input.rows; row++){
+			const float* ptrin = (const float*)(input.ptr(row));
+			float* ptrout = (float*)(output.ptr(row));
+			for (int col = 0; col < input.cols; col++){
+				if (*ptrin < 0) {
+					*ptrout = 1;
+				}
+				else {
+					*ptrout = ((*ptrin) - minVal) / difference;
+				}
+				ptrout++;
+				ptrin++;
+			}
 		}
 	}
-	std::vector<Ray> rays;
-	StrokeWidthTransform(edgeImage,
-		                 gradientX,
-		                 gradientY,
-		                 SWTImage,
-		                 rays);
 
-	// Second Pass
-	StrokeWidthMedianFilter(SWTImage, rays);
-	LOG(SWTImage);
-	std::vector<ConnectedComponent> components = findConnectedComponents(SWTImage);
-	FindComponentStats(SWTImage, components);
-	//DrawBoundingBox(inputImage, components);
-	std::vector<ConnectedComponent> filteredComponents = FilterComponents(SWTImage, components);
-	DrawBoundingBox(inputImage, filteredComponents);
-}
-
-void StrokeWidthMedianFilter(IplImage* SWTImage, std::vector<Ray>& rays)
-{
-	for (std::vector<Ray>::iterator ray = rays.begin(); ray != rays.end(); ray++)
+	void FindSWTMedians(Rays &rays)
 	{
-		for (std::vector<Point2d>::iterator point = ray->points.begin(); point != ray->points.end(); point++)
+		for (Rays::iterator ray = rays.begin(); ray != rays.end(); ray++)
 		{
-			auto temp = CV_IMAGE_ELEM(SWTImage, float, point->y, point->x);
-			point->SWT = temp;
-		}
-		
-		std::sort(ray->points.begin(), ray->points.end(), [](Point2d lhs, Point2d rhs) {
-			return lhs.SWT < rhs.SWT;
-		});
-
-		float medianSWTValue = ray->points[ray->points.size() / 2].SWT;
-
-		for (std::vector<Point2d>::iterator point = ray->points.begin(); point != ray->points.end(); point++)
-		{
-			CV_IMAGE_ELEM(SWTImage, float, point->y, point->x) = std::min(medianSWTValue, point->SWT);
-		}
-	}
-}
-
-std::vector<ConnectedComponent> findConnectedComponents(IplImage* SWTImage)
-{
-	std::map<int, int> imageMap;
-	std::map<int, Point2d> reverseImageMap;
-	int counter = 0;
-	//First Step: No. the vertices in the image to form a graph
-	for (int row = 0; row < SWTImage->height; row++)
-	{
-		//float* pixelPtr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
-		for (int col = 0; col < SWTImage->width; col++)
-		{
-			float pixelValue = CV_IMAGE_ELEM(SWTImage, float, row, col);
-			if (pixelValue > 0)
+			std::sort(ray->points.begin(), ray->points.end(),
+				[](SWTPoint left, SWTPoint right)
 			{
-				imageMap[row * SWTImage->width + col] = counter;
-				Point2d p;
-				p.x = col;
-				p.y = row;
-				p.SWT = pixelValue;
-				reverseImageMap[counter] = p;
-				counter++;
-			}			
-			//pixelPtr++;
+				return left.SWT > right.SWT;
+			});
+
+			float medianSWT = ray->points[ray->points.size() / 2].SWT;
+
+			for (std::vector<SWTPoint>::iterator point = ray->points.begin(); point != ray->points.end(); point++)
+			{
+				point->SWT = medianSWT;
+			}
 		}
 	}
-		//LOG(SWTImage);
-		boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> graph(counter);
 
-		for (int row = 0; row < SWTImage->height; row++)
+	std::vector<ConnectedComponent> FindConnectedComponents(Mat SWTImage)
+	{
+		std::map<int, int> imageMap;
+		std::map<int, Point> reverseImageMap;
+		int vertexCount = 0;
+		for (int row = 0; row < SWTImage.rows; row++)
 		{
-			float* pixelPtr = (float*)(SWTImage->imageData + row * SWTImage->widthStep);
-			for (int col = 0; col < SWTImage->width; col++)
+			for (int col = 0; col < SWTImage.cols; col++)
 			{
-				if (*pixelPtr >= 1)
+				if (SWTImage.at<float>(row, col) > 0)
 				{
-					int currentPixel = imageMap[row * SWTImage->width + col];
-					if (col + 1 < SWTImage->width)
-					{
-						float currentValue = CV_IMAGE_ELEM(SWTImage, float, row, col + 1);
-						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
-						{
-							boost::add_edge(currentPixel, imageMap[row * SWTImage->width + col + 1], graph);
-						}
-					}
-
-					if (col + 1 < SWTImage->width && row + 1 < SWTImage->height)
-					{
-						float currentValue = CV_IMAGE_ELEM(SWTImage, float, row + 1, col + 1);
-						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
-						{
-							boost::add_edge(currentPixel, imageMap[(row + 1) * SWTImage->width + col + 1], graph);
-						}
-					}
-
-					if (row + 1 < SWTImage->height)
-					{
-						float currentValue = CV_IMAGE_ELEM(SWTImage, float, row + 1, col);
-						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
-						{
-							boost::add_edge(currentPixel, imageMap[(row + 1) * SWTImage->width + col], graph);
-						}
-					}
-
-					if (row + 1 > 0 && col - 1 < SWTImage->height)
-					{
-						float currentValue = CV_IMAGE_ELEM(SWTImage, float, row + 1, col - 1);
-						if (currentValue > 0 && !(*pixelPtr / currentValue > 3.0) && !(currentValue / *pixelPtr > 3.0))
-						{
-							boost::add_edge(currentPixel, imageMap[(row + 1) * SWTImage->width + col - 1], graph);
-						}
-					}
+					Point vertex = { col, row };
+					reverseImageMap[vertexCount] = vertex;
+					imageMap[row * SWTImage.cols + col] = vertexCount;
+					vertexCount++;
 				}
-				pixelPtr++;
 			}
 		}
 
-			std::vector<int> c(counter);
-			int componentCount = boost::connected_components(graph, &c[0]);
-			std::vector<ConnectedComponent> connectedComponents(componentCount);
-			LOG("before filtering: " + to_string(componentCount) + " components");
+		typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS> Graph;
+		Graph graph(vertexCount);
 
-			for (int i = 0; i < componentCount; i++)
+		for (int n = 0; n < vertexCount; n++)
+		{
+			Point vertex = reverseImageMap[n];
+			int NextPixelX[] = { 1, 1, 0, -1 };
+			int NextPixelY[] = { 0, 1, 1, 1 };
+			float currentSWTValue = SWTImage.at<float>(vertex.y, vertex.x);
+			for (int i = 0; i < 4; i++)
 			{
-				ConnectedComponent temp;
-				connectedComponents.push_back(temp);
-			}
+				if (vertex.x + NextPixelX[i] >= SWTImage.cols ||
+					vertex.x + NextPixelX[i] < 0 ||
+					vertex.y + NextPixelY[i] >= SWTImage.rows ||
+					vertex.y + NextPixelY[i] < 0)
+				{
+					continue;
+				}
 
-			for (int i = 0; i < counter; i++)
+				Point adjacentPixel = { vertex.x + NextPixelX[i], vertex.y + NextPixelY[i] };
+				float adjacentSWTValue = SWTImage.at<float>(adjacentPixel.y, adjacentPixel.x);
+				if (adjacentSWTValue <= 0)
+				{
+					continue;
+				}
+				const float allowedRatio = 3.0;
+				if (adjacentSWTValue / currentSWTValue > allowedRatio || currentSWTValue / adjacentSWTValue > allowedRatio)
+				{
+					continue;
+				}
+
+				boost::add_edge(n, imageMap[adjacentPixel.y * SWTImage.cols + adjacentPixel.x], graph);
+			}
+		}
+
+		std::vector<int> componentMap(vertexCount);
+		int componentCount = connected_components(graph, &componentMap[0]);
+		std::vector<ConnectedComponent> connectedComponents;
+		LOG("Found " + to_string(componentCount) + " components");
+
+		for (int i = 0; i < componentCount; i++)
+		{
+			ConnectedComponent component;
+			connectedComponents.push_back(component);
+		}
+
+		for (int i = 0; i < vertexCount; i++)
+		{
+			Point vertex = reverseImageMap[i];
+			connectedComponents[componentMap[i]].points.push_back(vertex);
+		}
+
+		return connectedComponents;
+	}
+
+	void DrawBoundingBox(Mat inputImage, const std::vector<ConnectedComponent> components)
+	{
+		for (std::vector<ConnectedComponent>::const_iterator component = components.begin(); component != components.end(); component++)
+		{
+			SWTPoint min = { INT_MAX, INT_MAX, 0 };
+			SWTPoint max = { 0, 0, 0 };
+			for each (Point point in component->points)
 			{
-				Point2d currentPoint = reverseImageMap[i];
-				connectedComponents[c[i]].points.push_back(currentPoint);
+				min.x = std::min(min.x, point.x);
+				min.y = std::min(min.y, point.y);
+				max.x = std::max(max.x, point.x);
+				max.y = std::max(max.y, point.y);
 			}
-			return connectedComponents;
+			rectangle(inputImage,
+				cvPoint(min.x, min.y),
+				cvPoint(max.x, max.y),
+				CV_RGB(255, 0, 0),
+				2);
 		}
-
-void FindComponentStats(IplImage* SWTImage, std::vector<ConnectedComponent> &components)
-{
-	for (std::vector<ConnectedComponent>::iterator component = components.begin(); component != components.end(); component++)
-	{
-		float mean = 0;
-		int minX = INT_MAX;
-		int minY = INT_MAX;
-		int maxX = 0;
-		int maxY = 0;
-		std::vector<float> componentSWTList;
-		for each (Point2d point in component->points)
-		{
-			float SWTValue = CV_IMAGE_ELEM(SWTImage, float, point.y, point.x);
-			mean += SWTValue;
-			componentSWTList.push_back(SWTValue);
-			minX = std::min(minX,point.x);
-			minY = std::min(minY, point.y);
-			maxX = std::max(maxX, point.x);
-			maxY = std::max(maxY, point.y);
-		}
-		component->height = maxY - minY;
-		if (component->height <= 0)
-		{
-			continue;
-		}
-		component->aspectRatio = maxX - minX / maxY - minY;
-		mean /= component->points.size();
-		component->mean = mean;
-		float variance = 0;
-		for each (float value in componentSWTList)
-		{
-			variance += (value - mean)*(value - mean);
-		}
-		variance /= componentSWTList.size();
-		component->variance = variance;
+		LOG(inputImage);
 	}
-}
 
-std::vector<ConnectedComponent> FilterComponents(IplImage* SWTImage, std::vector<ConnectedComponent> &unfilteredComponents)
-{
-	std::vector<ConnectedComponent> filteredComponents;
-	for each (ConnectedComponent component in unfilteredComponents)
+
+	void TextDetection(Mat inputImage)
 	{
-		bool removed = false;
+		Mat grayImage = Mat(inputImage.rows, inputImage.cols, CV_8UC1);
+		cvtColor(inputImage, grayImage, CV_RGB2GRAY);
+		const int HIGH_THRESHOLD = 320;
+		const int LOW_THRESHOLD = 175;
+		Mat edgeImage = Mat(inputImage.rows, inputImage.cols, CV_8UC1);
+		//blur(grayImage, grayImage,Size(3,1));
+		Canny(grayImage, edgeImage, LOW_THRESHOLD, HIGH_THRESHOLD, 3);
+		LOG(edgeImage);
+		//Find Gradients
+		Mat gradientX = Mat(inputImage.rows, inputImage.cols, CV_32FC1);
+		Mat gradientY = Mat(inputImage.rows, inputImage.cols, CV_32FC1);
+		Mat gradient;
+		grayImage.convertTo(gradient, CV_32FC1, 1. / 255.);
+		GaussianBlur(gradient, gradient, Size(5, 5), 0, 0);
 
-		//Rule#1 : Reject Components whose variance is > 0.5 * mean
-		if (component.points.size() == 0)
-		{
-			removed = true;
-		}
-		else if (component.variance > 0.5 * component.mean)
-		{
-			removed = true;
-		}
-		else if (component.aspectRatio < 0.1 && component.aspectRatio > 10)
-		{
-			removed = true;
-		}
-		else if (component.height < 10 && component.height > 300)
-		{
-			removed = true;
-		}
-		if (!removed)
-		{
-			filteredComponents.push_back(component);
-		}
-	}
-	LOG("After filtering, No. of components = " + to_string(filteredComponents.size()));
-	return filteredComponents;
-}
+		//LOG(gradient);
 
-void DrawBoundingBox(IplImage* inputImage, const std::vector<ConnectedComponent> components)
-{
-	for (std::vector<ConnectedComponent>::const_iterator component = components.begin(); component != components.end() ; component++)
-	{
-		Point2d min = { INT_MAX, INT_MAX, 0 };
-		Point2d max = {0, 0, 0};
-		for each (Point2d point in component->points)
-		{
-			min.x = std::min(min.x, point.x);
-			min.y = std::min(min.y, point.y);
-			max.x = std::max(max.x, point.x);
-			max.y = std::max(max.y, point.y);
-		}
-		cvDrawRect(inputImage,
-			cvPoint(min.x, min.y),
-			cvPoint(max.x, max.y),
-			CV_RGB(255, 0, 0),
-			2);
+		Sobel(gradient, gradientX, CV_32FC1, 1, 0, CV_SCHARR);
+		Sobel(gradient, gradientY, CV_32FC1, 0, 1, CV_SCHARR);
+
+		cv::medianBlur(gradientX, gradientX, 3);
+		cv::medianBlur(gradientY, gradientY, 3);
+		LOG(gradientX);
+		LOG(gradientY);
+		Mat SWT = Mat(inputImage.rows, inputImage.cols, CV_32FC1, Scalar::all(-1));
+		Rays ray;
+		StrokeWidthTransform(edgeImage, gradientX, gradientY, SWT, ray);
+		Mat normalSWT(SWT.rows, SWT.cols, CV_32FC1);
+		normalizeImage(SWT, normalSWT);
+		LOG(normalSWT);
+		FindSWTMedians(ray);
+
+		//Find Connected Components
+	std:vector<ConnectedComponent> components = FindConnectedComponents(SWT);
+		DrawBoundingBox(inputImage, components);
 	}
-	LOG(inputImage, false);
-}
+
+};
 
 int main()
 {
-	IplImage* inputImage = cvLoadImage(
-		"C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.jpg");
-	if (!inputImage)
-	{
-		throw new exception("File not found");
-	}
-	TextDetection(inputImage);
-	system("pause");
+	cv::Mat inputImage = cv::imread("C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.jpg");
+	//assert(inputImage.data);
+	//BusinessCardReader::LOG(inputImage);
+	cv::resize(inputImage, inputImage, cv::Size(inputImage.cols / 2, inputImage.rows / 2));
+	BusinessCardReader::TextDetection(inputImage);
 	return 0;
 }
