@@ -53,6 +53,12 @@ namespace BusinessCardReader
 		int x;
 		int y;
 
+		ConnectedComponent()
+		{
+			x = -999;
+			y = -999;
+		}
+
 		bool operator == (const ConnectedComponent& component) const
 		{
 			return true;//component.y == this->y;
@@ -422,10 +428,29 @@ namespace BusinessCardReader
 
 	ConnectedComponent AggregateComponentGroup(std::vector<ConnectedComponent> group)
 	{
-		ConnectedComponent aggregate = group[0];
+		ConnectedComponent aggregate;
+		float meanHeight = 0;
+		float variance = 0;
+		for (std::vector<ConnectedComponent>::iterator component = group.begin(); component != group.end(); component++)
+		{
+			meanHeight += component->height;
+		}
+		meanHeight /= group.size();
+		
 		for (std::vector<ConnectedComponent>::iterator component = group.begin() + 1; component != group.end(); component++)
 		{
-			aggregate += *component;
+			//TODO: use standard deviation
+			if (component->height <= 2.5 * meanHeight)
+			{
+				if (aggregate.x < 0)
+				{
+					aggregate = *component;
+				}
+				else
+				{
+					aggregate += *component;
+				}
+			}
 		}
 		return aggregate;
 	}
