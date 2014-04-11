@@ -6,6 +6,9 @@
 #include <opencv2\opencv.hpp>
 #include <boost\graph\adjacency_list.hpp>
 #include <boost\graph\connected_components.hpp>
+#include <boost\icl\interval_map.hpp>
+#include <boost\icl\closed_interval.hpp>
+
 
 namespace BusinessCardReader
 {
@@ -47,9 +50,34 @@ namespace BusinessCardReader
 		float mean;
 		float height;
 		float width;
+		int x;
+		int y;
+
+		bool operator == (const ConnectedComponent& component) const
+		{
+			return true;//component.y == this->y;
+		}
+
+		ConnectedComponent operator += (const ConnectedComponent& component)
+		{
+			this->y = (int)std::min(this->y, component.y);
+			this->x = (int)std::min(this->x, component.x);
+			int maxX = std::max(this->x + this->width, component.x + component.width);
+			int maxY = std::max(this->y + this->height, component.y + component.height);
+			this->height = maxY - this->y;
+			this->width = maxX - this->x;
+			this->mean += component.mean;
+			this->mean /= 2;
+			this->variance += component.variance;
+			this->variance /= 2;
+			this->points.insert(this->points.end(), component.points.begin(), component.points.end());
+			return *this;
+		}
+
 	};
 
 	typedef std::vector<Ray> Rays;
+	void ChainComponents(std::vector<ConnectedComponent> components, Mat image);
 
 	void StrokeWidthTransform(Mat edgeImage, Mat gradientX, Mat gradientY, Mat &SWT, Rays &rays)
 	{
@@ -282,8 +310,8 @@ namespace BusinessCardReader
 				max.y = std::max(max.y, point.y);
 			}
 			rectangle(inputImage,
-				cvPoint(min.x, min.y),
-				cvPoint(max.x, max.y),
+				cvPoint(component->x, component->y),
+				cvPoint(component->x + component->width, component->y + component->height),
 				CV_RGB(255, 0, 0),
 				2);
 		}
@@ -308,7 +336,8 @@ namespace BusinessCardReader
 				maxY = std::max(maxY, point->y);
 				mean += point->SWT;
 			}
-
+			component->x = minX;
+			component->y = minY;
 			mean /= component->points.size();
 
 			for (std::vector<SWTPoint>::iterator point = component->points.begin(); point != component->points.end(); point++)
@@ -326,13 +355,13 @@ namespace BusinessCardReader
 	std::vector<ConnectedComponent> FilterComponents(std::vector<ConnectedComponent> &unfilteredComponents)
 	{
 		std::vector<ConnectedComponent> filteredComponents;
-		FindComponentStats(unfilteredComponents);
+		
 		for (std::vector<ConnectedComponent>::iterator component = unfilteredComponents.begin(); component != unfilteredComponents.end(); component++)
 		{
-			if (component->variance > 0.5 * component->mean)
+			/*if (component->variance > 0.5 * component->mean)
 			{
 				continue;
-			}
+			}*/
 			float aspectRatio = component->width / component->height;
 			if (aspectRatio < 0.1 || aspectRatio > 10)
 			{
@@ -350,7 +379,7 @@ namespace BusinessCardReader
 		const int HIGH_THRESHOLD = 320;
 		const int LOW_THRESHOLD = 175;
 		Mat edgeImage = Mat(inputImage.rows, inputImage.cols, CV_8UC1);
-		//blur(grayImage, grayImage,Size(3,1));
+		blur(grayImage, grayImage,Size(3,1));
 		Canny(grayImage, edgeImage, LOW_THRESHOLD, HIGH_THRESHOLD, 3);
 		LOG(edgeImage);
 		//Find Gradients
@@ -379,18 +408,72 @@ namespace BusinessCardReader
 
 		//Find Connected Components
 		std::vector<ConnectedComponent> components = FindConnectedComponents(SWT);
-		std::vector<ConnectedComponent> filteredComponents = FilterComponents(components);
-		DrawBoundingBox(inputImage, filteredComponents);
+		FindComponentStats(components);
+		//std::vector<ConnectedComponent> filteredComponents = FilterComponents(components);
+		//DrawBoundingBox(inputImage, components);
+		ChainComponents(components,inputImage);
 	}
 
+	bool IsComponentInInterval(boost::icl::interval<int>::type givenInterval, ConnectedComponent component)
+	{
+		return (component.y > givenInterval.lower() && component.y < givenInterval.upper() ||
+			component.y + component.height > givenInterval.lower() && component.y + component.height < givenInterval.upper());
+	}
+
+	ConnectedComponent AggregateComponentGroup(std::vector<ConnectedComponent> group)
+	{
+		ConnectedComponent aggregate = group[0];
+		for (std::vector<ConnectedComponent>::iterator component = group.begin() + 1; component != group.end(); component++)
+		{
+			aggregate += *component;
+		}
+		return aggregate;
+	}
+
+	void ChainComponents(std::vector<ConnectedComponent> components, Mat image)
+	{
+		boost::icl::interval_map<int,ConnectedComponent> yIntervals;
+		boost::icl::interval_set<int> tempyIntervals;
+		for (std::vector<ConnectedComponent>::iterator component = components.begin(); component != components.end(); component++)
+		{
+			boost::icl::interval<int>::type yInterval = boost::icl::interval<int>::construct(component->y, (int)(component->y + component->height/2));
+			auto intervalPair = make_pair(yInterval, *component);
+			yIntervals.add(intervalPair);
+			tempyIntervals.add(yInterval);
+
+		}
+		std::vector<ConnectedComponent> groups;
+		for (auto it = tempyIntervals.begin(); it != tempyIntervals.end(); it++)
+		{
+			std::vector<ConnectedComponent> group;
+			for (std::vector<ConnectedComponent>::iterator component = components.begin(); component != components.end(); component++)
+			{
+				if (IsComponentInInterval(*it, *component))
+				{
+					group.push_back(*component);
+				}
+			}
+			if (group.size() == 0)
+				continue;
+			auto aggregatedComponent = AggregateComponentGroup(group);
+			groups.push_back(aggregatedComponent);
+			rectangle(image,Point(aggregatedComponent.x,aggregatedComponent.y), 
+				Point(aggregatedComponent.x + aggregatedComponent.width,aggregatedComponent.y + aggregatedComponent.height),
+				Scalar(255,0,0),3);
+		}
+		LOG(image);
+		
+	}
 };
+
+
 
 int main()
 {
-	cv::Mat inputImage = cv::imread("C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.png");
+	cv::Mat inputImage = cv::imread("C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.jpg");
 	//assert(inputImage.data);
 	//BusinessCardReader::LOG(inputImage);
-	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
+	cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
 	BusinessCardReader::TextDetection(inputImage);
 	return 0;
 }
