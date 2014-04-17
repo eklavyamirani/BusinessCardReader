@@ -66,10 +66,10 @@ namespace BusinessCardReader
 
 		ConnectedComponent operator += (const ConnectedComponent& component)
 		{
-			this->y = (int)std::min(this->y, component.y);
-			this->x = (int)std::min(this->x, component.x);
 			int maxX = std::max(this->x + this->width, component.x + component.width);
 			int maxY = std::max(this->y + this->height, component.y + component.height);
+			this->y = (int)std::min(this->y, component.y);
+			this->x = (int)std::min(this->x, component.x);
 			this->height = maxY - this->y;
 			this->width = maxX - this->x;
 			this->mean += component.mean;
@@ -266,7 +266,7 @@ namespace BusinessCardReader
 					continue;
 				}
 
-				Point adjacentPixel = { vertex.x + NextPixelX[i], vertex.y + NextPixelY[i] };
+				Point adjacentPixel(vertex.x + NextPixelX[i], vertex.y + NextPixelY[i]);
 				float adjacentSWTValue = SWTImage.at<float>(adjacentPixel.y, adjacentPixel.x);
 				if (adjacentSWTValue <= 0)
 				{
@@ -387,7 +387,7 @@ namespace BusinessCardReader
 		Mat edgeImage = Mat(inputImage.rows, inputImage.cols, CV_8UC1);
 		blur(grayImage, grayImage,Size(3,1));
 		Canny(grayImage, edgeImage, LOW_THRESHOLD, HIGH_THRESHOLD, 3);
-		LOG(edgeImage);
+		//LOG(edgeImage);
 		//Find Gradients
 		Mat gradientX = Mat(inputImage.rows, inputImage.cols, CV_32FC1);
 		Mat gradientY = Mat(inputImage.rows, inputImage.cols, CV_32FC1);
@@ -402,8 +402,8 @@ namespace BusinessCardReader
 
 		cv::medianBlur(gradientX, gradientX, 3);
 		cv::medianBlur(gradientY, gradientY, 3);
-		LOG(gradientX);
-		LOG(gradientY);
+		//LOG(gradientX);
+		//LOG(gradientY);
 		Mat SWT = Mat(inputImage.rows, inputImage.cols, CV_32FC1, Scalar::all(-1));
 		Rays ray;
 		StrokeWidthTransform(edgeImage, gradientX, gradientY, SWT, ray);
@@ -431,24 +431,55 @@ namespace BusinessCardReader
 		ConnectedComponent aggregate;
 		float meanHeight = 0;
 		float variance = 0;
+		int legitComponentCount = 0;
+		int base = 0;
+		int maxBaseCount = 0;
+		map<int, int> baseMap;
 		for (std::vector<ConnectedComponent>::iterator component = group.begin(); component != group.end(); component++)
 		{
-			meanHeight += component->height;
-		}
-		meanHeight /= group.size();
-		
-		for (std::vector<ConnectedComponent>::iterator component = group.begin() + 1; component != group.end(); component++)
-		{
-			//TODO: use standard deviation
-			if (component->height <= 2.5 * meanHeight)
+			//Eliminating false/pixel sized groups
+			if (component->points.size() > 1)
 			{
-				if (aggregate.x < 0)
+				meanHeight += component->height;
+				legitComponentCount++;
+				int currentBase = ceil((component->y + component->height) / 10) * 10;
+				if (baseMap[currentBase] > 0)
 				{
-					aggregate = *component;
+					baseMap[currentBase]++;
 				}
 				else
 				{
-					aggregate += *component;
+					baseMap[currentBase] = 1;
+				}
+
+				if (baseMap[currentBase] > maxBaseCount)
+				{
+					base = currentBase;
+					maxBaseCount = baseMap[currentBase];
+				}
+			}
+
+		}
+		meanHeight /= legitComponentCount;
+		
+		for (std::vector<ConnectedComponent>::iterator component = group.begin(); component != group.end(); component++)
+		{
+			
+			if (component->points.size() > 1)
+			{
+				int distanceFromBase = component->y + component->height - base;
+				const int ALLOWED_THRESHOLD = 10;
+				//TODO: use standard deviation
+				if (distanceFromBase >= 0 - ALLOWED_THRESHOLD)
+				{
+					if (aggregate.x < 0)
+					{
+						aggregate = *component;
+					}
+					else
+					{
+						aggregate += *component;
+					}
 				}
 			}
 		}
@@ -457,15 +488,15 @@ namespace BusinessCardReader
 
 	void ChainComponents(std::vector<ConnectedComponent> components, Mat image)
 	{
-		boost::icl::interval_map<int,ConnectedComponent> yIntervals;
 		boost::icl::interval_set<int> tempyIntervals;
 		for (std::vector<ConnectedComponent>::iterator component = components.begin(); component != components.end(); component++)
 		{
+			if (component->height <= 1)
+			{
+				continue;
+			}
 			boost::icl::interval<int>::type yInterval = boost::icl::interval<int>::construct(component->y, (int)(component->y + component->height/2));
-			auto intervalPair = make_pair(yInterval, *component);
-			yIntervals.add(intervalPair);
 			tempyIntervals.add(yInterval);
-
 		}
 		std::vector<ConnectedComponent> groups;
 		for (auto it = tempyIntervals.begin(); it != tempyIntervals.end(); it++)
@@ -498,7 +529,27 @@ int main()
 	cv::Mat inputImage = cv::imread("C:\\Users\\Eklavya\\Documents\\visual studio 2013\\Projects\\TextDetectcpp\\Debug\\Sample Card.jpg");
 	//assert(inputImage.data);
 	//BusinessCardReader::LOG(inputImage);
-	cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
+	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
 	BusinessCardReader::TextDetection(inputImage);
 	return 0;
+}
+
+extern "C" __declspec(dllexport) int DetectTextInImage(char* filePath)
+{
+	std::cout << filePath;
+	cv::Mat inputImage = cv::imread(filePath);
+	assert(inputImage.data);
+	//BusinessCardReader::LOG(inputImage);
+	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
+	BusinessCardReader::TextDetection(inputImage);
+	return 0;
+}
+
+extern "C" __declspec(dllexport) void RetreiveImageFromByteString(char* data, int size)
+{
+	assert(data != NULL);
+	std::vector<uchar> byteData(data, data + size - 1);
+	cv::Mat dataMat(byteData, true);
+	cv::Mat inputImage = cv::imdecode(dataMat, 1);
+	BusinessCardReader::LOG(inputImage);
 }
