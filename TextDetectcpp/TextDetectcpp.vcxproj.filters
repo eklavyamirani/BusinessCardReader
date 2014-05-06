@@ -15,11 +15,22 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Source.cpp">
+    <ClCompile Include="TextDetection.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Interval.cpp">
+    <ClCompile Include="Recognition.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="PatternMatching.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Recognition.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PatternMatching.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

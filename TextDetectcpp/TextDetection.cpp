@@ -1,4 +1,5 @@
 #define _CRT_SECURE_NO_DEPRECATE
+#define DEBUG 0
 #include <iostream>
 #include <string>
 #include <opencv2\highgui\highgui.hpp>
@@ -8,12 +9,35 @@
 #include <boost\graph\connected_components.hpp>
 #include <boost\icl\interval_map.hpp>
 #include <boost\icl\closed_interval.hpp>
+#include <boost\algorithm\string.hpp>
+#include "Recognition.h"
+#include "PatternMatching.h"
 
 
 namespace BusinessCardReader
 {
 	using namespace std;
 	using namespace cv;
+
+	cv::vector<Rect> rectangles;
+
+	void LOG(std::string message)
+	{
+#if DEBUG
+		std::cout << message << std::endl;
+#endif
+	}
+
+	void LOG(cv::Mat inputImage)
+	{
+#if DEBUG
+		const std::string WINDOW_NAME = "Input Image";
+		cv::namedWindow(WINDOW_NAME);
+		cv::imshow(WINDOW_NAME, inputImage);
+		cv::waitKey(0);
+		cv::destroyWindow(WINDOW_NAME);
+#endif
+	}
 
 	struct SWTPoint
 	{
@@ -22,29 +46,9 @@ namespace BusinessCardReader
 		float SWT;
 	};
 
-	void LOG(std::string message)
+	class ConnectedComponent
 	{
-		std::cout << message << std::endl;
-	}
-
-	void LOG(cv::Mat inputImage)
-	{
-		const std::string WINDOW_NAME = "Input Image";
-		cv::namedWindow(WINDOW_NAME);
-		cv::imshow(WINDOW_NAME, inputImage);
-		cv::waitKey(0);
-		cv::destroyWindow(WINDOW_NAME);
-	}
-
-	struct Ray
-	{
-		vector<SWTPoint> points;
-		Point p;
-		Point q;
-	};
-
-	struct ConnectedComponent
-	{
+	public:
 		std::vector<SWTPoint> points;
 		float variance;
 		float mean;
@@ -59,9 +63,37 @@ namespace BusinessCardReader
 			y = -999;
 		}
 
+		operator cv::Rect()
+		{
+			return cv::Rect(x, y, width, height);
+		}
+
+		bool Contains(Point2d point)
+		{
+			return point.x > x &&
+				point.x < x + width &&
+				point.y > y &&
+				point.y < y + height;
+		}
+
+#if DEBUG
+		void ShowComponent(Mat image)
+		{
+			cv::Mat roi = image((cv::Rect)*this);
+			BusinessCardReader::LOG(roi);
+		}
+#endif
+
 		bool operator == (const ConnectedComponent& component) const
 		{
-			return true;//component.y == this->y;
+			return component.y == this->y;
+		}
+
+		ConnectedComponent operator + (const ConnectedComponent component)
+		{
+			ConnectedComponent newComponent = *this;
+			newComponent += component;
+			return newComponent;
 		}
 
 		ConnectedComponent operator += (const ConnectedComponent& component)
@@ -81,6 +113,96 @@ namespace BusinessCardReader
 		}
 
 	};
+
+	namespace TextExtraction
+	{
+		bool IsInside(ConnectedComponent outerComponent, ConnectedComponent innerComponent)
+		{
+			return (outerComponent.Contains(Point2d(innerComponent.x, innerComponent.y)) ||
+				outerComponent.Contains(Point(innerComponent.x + innerComponent.width, innerComponent.y)) ||
+				outerComponent.Contains(Point(innerComponent.x, innerComponent.y + innerComponent.height)) ||
+				outerComponent.Contains(Point(innerComponent.x + innerComponent.width, innerComponent.y + innerComponent.height)));
+		}
+
+		bool IsCompletelyInside(ConnectedComponent outerComponent, ConnectedComponent innerComponent)
+		{
+			return (outerComponent.Contains(Point(innerComponent.x, innerComponent.y)) &&
+				outerComponent.Contains(Point(innerComponent.x + innerComponent.width, innerComponent.y)) &&
+				outerComponent.Contains(Point(innerComponent.x, innerComponent.y + innerComponent.height)) &&
+				outerComponent.Contains(Point(innerComponent.x + innerComponent.width, innerComponent.y + innerComponent.height)));
+		}
+
+		vector<ConnectedComponent> Connect(vector<ConnectedComponent> rectangles, bool merging)			  
+		{
+			vector<Rect> connectedRects;
+			for (int i = 0; i < rectangles.size(); ++i)
+			{
+				for (int j = 0; j < rectangles.size(); ++j)
+				{
+					if (j != i)
+					{
+						float heightRatio = rectangles[j].height / rectangles[i].height;
+						if ((
+							(((rectangles[j].x) - (rectangles[i].x + rectangles[i].width)) < (rectangles[i].width + rectangles[i].height + rectangles[j].height + rectangles[j].width) / 4) && /*Horizontal distance between rectangles must be smaller than average of dimensions of the two rectangles to be merged*/
+							(rectangles[i].x<rectangles[j].x) && /* assumption that condition is satisfied only when jth rectangle is on left side of ith rectangle */
+							(abs((rectangles[i].y + rectangles[i].height / 2) - (rectangles[j].y + rectangles[j].height / 2))< (rectangles[i].height + rectangles[j].height) / 4)) ||   /* Horizontal distance between rectangles must be smaller than average of dimensions of the two rectangles to be merged */
+							(((IsInside(rectangles[i], rectangles[j]) && heightRatio<2 && heightRatio>0.50) || IsCompletelyInside(rectangles[i], rectangles[j])) && merging == true) /* A vertex of jth rectangle lies inside ith rectangle */
+							)
+
+						{
+
+							ConnectedComponent temprect = rectangles[i] + rectangles[j];
+							rectangles.push_back(temprect);
+							rectangles.erase(rectangles.begin() + (i));
+							if (i<j)
+								rectangles.erase(rectangles.begin() + (j - 1));
+							else
+								rectangles.erase(rectangles.begin() + (j));
+							i = 0; j = 0;
+						}
+					}
+				}
+			}
+			return rectangles;
+		}
+
+		//Extract Areas of interest from image one by one in the increasing order of Rectangle height.
+		std::vector<string> ExtractRectangles(vector<ConnectedComponent> components, Mat image)  
+		{
+			std::vector<string> extractedStrings;
+			for (int i = 0; i<components.size(); i++)
+			{
+				Mat image_roi = image(components[i]);
+				if (!image_roi.data)
+				{
+					continue;
+				}
+				/*Mat grayImage = Mat(image_roi.rows, image_roi.cols, CV_8UC1);
+				cvtColor(image_roi, grayImage, CV_RGB2GRAY);
+				threshold( grayImage, grayImage, 0, 255,0 );
+				*///dilate(image_roi, image_roi, 0, Point(-1, -1), 2, 1, 1);
+				//imwrite("image" + to_string(i) + ".jpg", image_roi);
+				auto readString = BusinessCardReader::Recognition::RetreiveText(image_roi);
+				boost::algorithm::trim(readString);
+				LOG(readString);
+				if (readString.length() > 0)
+				{
+					rectangle(image, components[i], Scalar(255, 255, 255), -1, 8, 0);
+					extractedStrings.push_back(readString);
+				}
+			}
+			return extractedStrings;
+		}
+	};	
+
+	struct Ray
+	{
+		vector<SWTPoint> points;
+		Point p;
+		Point q;
+	};
+
+	
 
 	typedef std::vector<Ray> Rays;
 	void ChainComponents(std::vector<ConnectedComponent> components, Mat image);
@@ -320,6 +442,7 @@ namespace BusinessCardReader
 				cvPoint(component->x + component->width, component->y + component->height),
 				CV_RGB(255, 0, 0),
 				2);
+			rectangles.push_back(cv::Rect(component->x,component->y,component->width,component->height));
 		}
 		LOG(inputImage);
 	}
@@ -378,7 +501,7 @@ namespace BusinessCardReader
 		return filteredComponents;
 	}
 
-	void TextDetection(Mat inputImage)
+	vector<ConnectedComponent> TextDetection(Mat inputImage)
 	{
 		Mat grayImage = Mat(inputImage.rows, inputImage.cols, CV_8UC1);
 		cvtColor(inputImage, grayImage, CV_RGB2GRAY);
@@ -417,7 +540,9 @@ namespace BusinessCardReader
 		FindComponentStats(components);
 		//std::vector<ConnectedComponent> filteredComponents = FilterComponents(components);
 		//DrawBoundingBox(inputImage, components);
-		ChainComponents(components,inputImage);
+		//ChainComponents(components,inputImage);
+
+		return components;
 	}
 
 	bool IsComponentInInterval(boost::icl::interval<int>::type givenInterval, ConnectedComponent component)
@@ -517,12 +642,9 @@ namespace BusinessCardReader
 				Point(aggregatedComponent.x + aggregatedComponent.width,aggregatedComponent.y + aggregatedComponent.height),
 				Scalar(255,0,0),3);
 		}
-		LOG(image);
-		
+		LOG(image);	
 	}
 };
-
-
 
 int main()
 {
@@ -530,26 +652,56 @@ int main()
 	//assert(inputImage.data);
 	//BusinessCardReader::LOG(inputImage);
 	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
-	BusinessCardReader::TextDetection(inputImage);
+	auto components = BusinessCardReader::TextDetection(inputImage);
+	auto simpleComponents = BusinessCardReader::TextExtraction::Connect(components, false);
+
+	std::sort(simpleComponents.begin(), simpleComponents.end(),
+		[](BusinessCardReader::ConnectedComponent leftComponent, BusinessCardReader::ConnectedComponent rightComponent){
+		return leftComponent.height < rightComponent.height;
+	});
+
+	auto outputStringCollection = BusinessCardReader::TextExtraction::ExtractRectangles(simpleComponents, inputImage);
+	auto contactInformation = BusinessCardReader::PatternMatching::ExtractContactInformation(outputStringCollection);
+	BusinessCardReader::LOG(std::string("Name : ") + contactInformation.Name);
+	system("pause");
 	return 0;
 }
 
-extern "C" __declspec(dllexport) int DetectTextInImage(char* filePath)
-{
-	std::cout << filePath;
-	cv::Mat inputImage = cv::imread(filePath);
-	assert(inputImage.data);
-	//BusinessCardReader::LOG(inputImage);
-	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
-	BusinessCardReader::TextDetection(inputImage);
-	return 0;
-}
-
-extern "C" __declspec(dllexport) void RetreiveImageFromByteString(char* data, int size)
+cv::Mat RetreiveImageFromByteString(char* data, int size)
 {
 	assert(data != NULL);
 	std::vector<uchar> byteData(data, data + size - 1);
 	cv::Mat dataMat(byteData, true);
 	cv::Mat inputImage = cv::imdecode(dataMat, 1);
 	BusinessCardReader::LOG(inputImage);
+	return inputImage;
 }
+
+struct DummyContactInformation
+{
+	char Name[256];
+	char Phone[256];
+	char Email[256];
+};
+
+extern "C" __declspec(dllexport) int __stdcall DetectTextInImage(char* imageData, int size, DummyContactInformation* contactInformationReference)
+{
+	cv::Mat inputImage = RetreiveImageFromByteString(imageData, size);
+	assert(inputImage.data);
+	//cv::resize(inputImage, inputImage, cv::Size(inputImage.cols/2,inputImage.rows/2));
+	auto components = BusinessCardReader::TextDetection(inputImage);
+	auto simpleComponents = BusinessCardReader::TextExtraction::Connect(components, true);
+	
+	std::sort(simpleComponents.begin(), simpleComponents.end(), 
+		[](BusinessCardReader::ConnectedComponent leftComponent,BusinessCardReader::ConnectedComponent rightComponent){
+		return leftComponent.height < rightComponent.height;
+	});
+
+	auto outputStringCollection = BusinessCardReader::TextExtraction::ExtractRectangles(simpleComponents, inputImage);
+	auto contactInformation = BusinessCardReader::PatternMatching::ExtractContactInformation(outputStringCollection);
+	sprintf(contactInformationReference->Name,contactInformation.Name.c_str());
+	sprintf(contactInformationReference->Email, contactInformation.Email.c_str());
+	sprintf(contactInformationReference->Phone, contactInformation.Phone.c_str());
+	return 0;
+}
+
