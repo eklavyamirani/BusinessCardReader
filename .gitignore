@@ -24,6 +24,9 @@ bld/
 *.VisualState.xml
 TestResult.xml
 
+#Nuget
+packages/
+
 *_i.c
 *_p.c
 *_i.h

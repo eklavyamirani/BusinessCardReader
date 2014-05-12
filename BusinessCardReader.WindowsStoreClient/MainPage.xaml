@@ -1,0 +1,22 @@
+﻿<Page
+    x:Class="BusinessCardReader.WindowsStoreClient.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:BusinessCardReader.WindowsStoreClient"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <StackPanel>
+        <Image x:Name="CardImageHolder" Height="500" Width="500"></Image>
+            <StackPanel Orientation="Horizontal">
+        <Button x:Name="CaptureImageButton" Content="Capture Image" Click="CaptureImageButton_Click"></Button>
+            <Button x:Name="BrowseButton" Content="Browse..." Click="BrowseButton_Click"></Button>
+        <Button x:Name="SendCardButton" Content="Send Card" Click="SendCardButton_Click"></Button>
+            </StackPanel>
+            <TextBlock x:Name="RecievedTextDataBlock"></TextBlock>
+        </StackPanel>
+
+    </Grid>
+</Page>
